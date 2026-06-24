@@ -6,7 +6,7 @@ use std::{
 };
 
 use ere_dockerized::{
-    Compiler, CompilerKind, DockerizedCompiler, DockerizedzkVM, DockerizedzkVMConfig, Input,
+    Compiler, CompilerKind, DockerizedCompiler, DockerizedzkVM, DockerizedzkVMConfig, Elf, Input,
     ProverResource, zkVMKind,
 };
 use flate2::read::GzDecoder;
@@ -64,6 +64,65 @@ pub fn get_fixtures() -> Vec<StatelessValidatorFixture> {
             fixture
         })
         .collect()
+}
+
+/// Initialises a zkVM from a pre-built ELF path, bypassing `DockerizedCompiler`.
+pub fn init_zkvm_from_elf(elf_path: &Path, zkvm_kind: zkVMKind) -> DockerizedzkVM {
+    let bytes = std::fs::read(elf_path)
+        .unwrap_or_else(|err| panic!("failed to read ELF at {}: {err}", elf_path.display()));
+    DockerizedzkVM::new(
+        zkvm_kind,
+        Elf::from(bytes),
+        ProverResource::Cpu,
+        DockerizedzkVMConfig::default(),
+    )
+    .unwrap()
+}
+
+/// Runs execution against a pre-built ELF, then checks outputs match expectations.
+pub fn test_execution_from_elf(
+    elf_path: &Path,
+    zkvm_kind: zkVMKind,
+    test_cases: impl IntoIterator<Item = TestCase>,
+) {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .try_init();
+
+    let test_cases = test_cases.into_iter().collect::<Vec<_>>();
+    assert!(!test_cases.is_empty());
+
+    let zkvm = init_zkvm_from_elf(elf_path, zkvm_kind);
+
+    test_cases.into_par_iter().for_each(|test_case| {
+        info!("Running execution of test case {}", test_case.name);
+
+        let (public_values, report) = zkvm.execute(&test_case.input).unwrap();
+
+        info!(
+            "Execution of test case {} took {:?}",
+            test_case.name, report.execution_duration
+        );
+
+        let mut expected_public_values = test_case.expected_public_values;
+
+        if matches!(zkvm_kind, zkVMKind::Airbender | zkVMKind::OpenVM)
+            && expected_public_values.len() < 32
+        {
+            expected_public_values.resize(32, 0);
+        }
+
+        if matches!(zkvm_kind, zkVMKind::Zisk) && expected_public_values.len() < 256 {
+            expected_public_values.resize(256, 0);
+        }
+
+        assert_eq!(
+            public_values.0, expected_public_values,
+            "Expected public values of test case {} to be \
+                {expected_public_values:?}, but got {public_values:?}",
+            test_case.name
+        );
+    });
 }
 
 /// Compiles guest program and initialize zkVM.
@@ -153,6 +212,21 @@ impl TestCase {
             name: name.as_ref().to_string(),
             input: Input::new().with_stdin(input.encode_to_vec().unwrap()),
             expected_public_values: output.encode_to_vec().unwrap(),
+        }
+    }
+
+    /// Constructs a [`TestCase`] from pre-encoded raw stdin bytes and expected public values.
+    ///
+    /// Use when the guest has a custom wire format (e.g. SSZ) instead of the standard codec.
+    pub fn from_raw(
+        name: impl AsRef<str>,
+        stdin: Vec<u8>,
+        expected_public_values: Vec<u8>,
+    ) -> Self {
+        Self {
+            name: name.as_ref().to_string(),
+            input: Input::new().with_stdin(stdin),
+            expected_public_values,
         }
     }
 

@@ -31,3 +31,10 @@ ere-dockerized.workspace = true
 # local
 guest.workspace = true
 stateless-validator-common.workspace = true
+
+[dev-dependencies]
+libssz.workspace = true
+
+stateless-validator-reth = { workspace = true, default-features = true, features = [
+    "host",
+] }

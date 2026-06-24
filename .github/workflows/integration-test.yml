@@ -12,6 +12,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Tag of the zesu-zkvm release to download pre-built ELFs from.
+  # Update this when pulling in a new zesu-zkvm version.
+  ZESU_ZKVM_TAG: "latest"
 
 jobs:
   test:
@@ -104,5 +107,76 @@ jobs:
           sudo chown -R $(id -u):$(id -g) bin/${{ matrix.guest }}/${{ matrix.zkvm }}/target || true
 
       - name: Run sccache stat for check
+        shell: bash
+        run: ${SCCACHE_PATH} --show-stats
+
+  test-zesu:
+    # Tests stateless-validator-zesu against pre-built ELFs downloaded from zesu-zkvm releases.
+    name: Test execution of stateless-validator-zesu on ${{ matrix.zkvm }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        zkvm:
+          - zisk
+        include:
+          - zkvm: zisk
+            threads: 1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        if: ${{ !env.ACT }}
+        run: bash .github/scripts/free-up-disk-space.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup sccache
+        if: ${{ !env.ACT }}
+        uses: mozilla/sccache-action@v0.0.9
+
+      - name: Configure sccache
+        if: ${{ !env.ACT }}
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+
+      - name: Cache cargo registry
+        if: ${{ !env.ACT }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Download Zesu ELF from zesu-zkvm release
+        # Skipped when ZESU_ELF_ZISK is already set (e.g. via `act --env ZESU_ELF_ZISK=...`
+        # for local testing against a locally built artifact).
+        if: env.ZESU_ELF_ZISK == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${{ env.ZESU_ZKVM_TAG }}" \
+            --repo "${{ github.repository_owner }}/zesu-zkvm" \
+            --pattern "stateless-validator-zesu-${{ matrix.zkvm }}.elf" \
+            --dir zesu-elfs
+          echo "ZESU_ELF_ZISK=$(pwd)/zesu-elfs/stateless-validator-zesu-zisk.elf" >> $GITHUB_ENV
+
+      - name: Test
+        env:
+          RUST_LOG: info
+          RAYON_NUM_THREADS: ${{ matrix.threads }}
+          ERE_IMAGE_REGISTRY: ghcr.io/eth-act/ere
+        run: |
+          cargo test --release --package stateless-validator-test --test stateless-validator-zesu -- ${{ matrix.zkvm }}
+
+      - name: Run sccache stat for check
+        if: ${{ !env.ACT }}
         shell: bash
         run: ${SCCACHE_PATH} --show-stats
