@@ -91,12 +91,18 @@ fn payload_timestamp(input: &StatelessValidatorRethInput) -> u64 {
 /// Returns the zesu ProtocolFork enum index for the active fork.
 ///
 /// Zesu's decoder reads this index and maps it via `forkNameFromIndex`:
-///   17 → "Prague", 18 → "Osaka", 24 → "Amsterdam"
+///   17 → "Prague", 18 → "Osaka", 19 → "BPO1", 20 → "BPO2", 24 → "Amsterdam"
 fn zesu_fork_idx(input: &StatelessValidatorRethInput) -> u64 {
     let timestamp = payload_timestamp(input);
     let cc = &input.chain_config;
     if cc.amsterdam_time.is_some_and(|t| timestamp >= t) {
         return 24;
+    }
+    if cc.bpo2_time.is_some_and(|t| timestamp >= t) {
+        return 20;
+    }
+    if cc.bpo1_time.is_some_and(|t| timestamp >= t) {
+        return 19;
     }
     if cc.osaka_time.is_some_and(|t| timestamp >= t) {
         return 18;
